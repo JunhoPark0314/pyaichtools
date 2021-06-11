@@ -1,3 +1,3 @@
 if result is None:
     result = var0
-print(result)
+print('recovered source output:', result)

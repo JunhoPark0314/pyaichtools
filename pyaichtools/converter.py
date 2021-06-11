@@ -36,6 +36,10 @@ class Converter:
 			header_file = header_file.read()
 			self.header = cst.parse_module(header_file)
 
+		with open(cfg.ql_path) as ql_file:
+			ql_file = ql_file.read()
+			self.quality_list = cst.parse_module(ql_file)
+
 		with open(cfg.footer_path) as footer_file:
 			footer_file = footer_file.read()
 			self.footer = cst.parse_module(footer_file)
@@ -59,7 +63,7 @@ class Converter:
 		"""
 		
 		self.SPT = cfg.SPT
-		self.attach_code = lambda x: self.header.body + x + self.footer.body
+		self.attach_code = lambda x: self.header.body + self.quality_list.body + x + self.footer.body
 		
 	def generate_label_dict(self, var_list, const_list, tree_spt_list, pi_prefix, max_qunatity_len):
 		libcst_class_list = [
