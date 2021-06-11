@@ -2,7 +2,7 @@ import libcst as cst
 import sys
 import inspect
 import json
-from treelib import Tree
+from treelib import Tree, plugins
 
 LIBCST_INTERST_ATTR = [
     "body",
