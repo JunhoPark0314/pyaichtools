@@ -7,7 +7,7 @@ from pyaichtools.utils import *
 
 
 class Converter:
-	def __init__(self, cfg):
+	def __init__(self, cfg, debug=False):
 		with open(cfg.header_path) as header_file:
 			header_file = header_file.read()
 			self.header = cst.parse_module(header_file)
@@ -15,6 +15,10 @@ class Converter:
 		with open(cfg.ql_path) as ql_file:
 			ql_file = ql_file.read()
 			self.quality_list = cst.parse_module(ql_file)
+
+		with open(cfg.gen_head_path) as gen_head_file:
+			gen_head_file = gen_head_file.read()
+			self.gen_head = cst.parse_module(gen_head_file)
 
 		with open(cfg.footer_path) as footer_file:
 			footer_file = footer_file.read()
@@ -37,7 +41,13 @@ class Converter:
 		
 		self.SPT = cfg.SPT
 		self.attach_code = lambda x: self.header.body + self.quality_list.body + x + self.footer.body
-		
+		self.debug = debug
+	
+	def attach_gen_file(self, generated):
+		self.gen_head.body[0].body.body.extend(generated.body)
+		#self.gen_head.body[0].body.body = [base_frame[0]] + generated.body + [base_frame[1]]
+		return self.gen_head
+
 	def generate_label_dict(self, var_list, const_list):
 		libcst_class_list = [
 			'{}'.format(name)
@@ -52,7 +62,6 @@ class Converter:
 			if inspect.isbuiltin(obj)
 		]
 		math_func_list.sort()
-		math_func_list.append("math")
 
 		itertools_class_list = [
 			'{}'.format(name)
@@ -60,10 +69,11 @@ class Converter:
 			if inspect.isclass(obj)
 		]
 		itertools_class_list.sort()
-		itertools_class_list.append('itertools')
 
 		whole_label_list = libcst_class_list + math_func_list + itertools_class_list + var_list + const_list
 		whole_label_list.extend(LABEL_PREFIX_INFO["PROBLEM_INFO_PREFIX"])
+		whole_label_list.extend(["math","itertools"])
+		whole_label_list.extend(LABEL_PREFIX_INFO["ST_EN_PREFIX"])
 		LABEL_LIMIT = len(whole_label_list)
 		whole_label_list.extend(list(range(LABEL_PREFIX_INFO["MAX_QUANTITY_LEN"])))
 		whole_label_list.extend(list(range(LABEL_PREFIX_INFO["NOUN_ST"], LABEL_PREFIX_INFO["NOUN_ST"] + LABEL_PREFIX_INFO["MAX_NOUN_LEN"])))
@@ -83,7 +93,9 @@ class Converter:
 		else:
 			curr_node = cst_tree.create_node(str.join(self.SPT, [attr, type(parsed_cst).__name__]), parent=parent_id)
 
-		for interest_attr in dir(parsed_cst):
+		curr_attr_list = dir(parsed_cst)
+		curr_attr_list.reverse()
+		for interest_attr in curr_attr_list:
 			if interest_attr in self.interest_attr_list:
 				if type(getattr(parsed_cst, interest_attr)) in [list ,tuple]:
 					for attr_ele in getattr(parsed_cst, interest_attr):
@@ -124,6 +136,7 @@ class Converter:
 				if prev_attr != curr_attr:
 					curr_seq.append(per_attr_seq)
 					per_attr_seq = []
+					prev_attr= curr_attr
 				per_attr_seq = self.tree_to_list(ann_tree.subtree(child_node.identifier), per_attr_seq, label_to_id)
 			curr_seq.append(per_attr_seq)
 		seq.extend(curr_seq)
@@ -136,7 +149,9 @@ class Converter:
 				curr_tag = self.unlabel_ele(node_seq[0]) if unlabel_to_token else node_seq[0]
 				curr_node = root_tree.create_node(str.join(self.SPT, [attr,curr_tag]), parent=parent_id)
 				if hasattr(cst, curr_tag):
-					attr_list = [attr for attr in dir(getattr(cst, curr_tag)) if attr in self.interest_attr_list]
+					curr_node_attr_list = dir(getattr(cst, curr_tag))
+					curr_node_attr_list.reverse()
+					attr_list = [attr for attr in curr_node_attr_list if attr in self.interest_attr_list]
 					assert(len(attr_list) == len(node_seq[1:]))
 					for attr_ele, attr_seq in zip(attr_list, node_seq[1:]):
 						root_tree = self.list_to_tree(attr_seq, root_tree, curr_node.identifier, attr_ele, unlabel_to_token)
@@ -249,7 +264,7 @@ class Converter:
 
 		encoded_seq = []
 		if mode=="list":
-			labeled_seq = self.tree_to_list(essential_tree, encoded_seq, label_to_id=True)
+			labeled_seq = self.tree_to_list(essential_tree, encoded_seq, label_to_id=(not self.debug))
 		elif mode == "seq":
 			encoded_seq = self.tree_to_seq(essential_tree, encoded_seq)
 			labeled_seq = self.label_seq(encoded_seq, problem_info)
@@ -259,12 +274,13 @@ class Converter:
 	def decode(self, labeled_seq, problem_info=None, mode="list"):
 
 		if mode=="list":
-			recovered_tree = self.list_to_tree(labeled_seq, Tree(), unlabel_to_token=True)
+			recovered_tree = self.list_to_tree(labeled_seq, Tree(), unlabel_to_token=(not self.debug))
 		elif mode=="seq":
 			decoded_seq = self.unlabel_seq(labeled_seq, problem_info)
 			recovered_tree = self.seq_to_tree(decoded_seq, Tree())
 		
 		recovered_cst = self.tree_to_cst(recovered_tree)
+		recovered_cst = self.attach_gen_file(recovered_cst)
 		recovered_module = cst.Module(body=self.attach_code(recovered_cst.body))		
 
 		generated_code = cst.Module([]).code_for_node(recovered_module)

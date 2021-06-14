@@ -29,4 +29,5 @@ LABEL_PREFIX_INFO = {
 	"MAX_QUANTITY_LEN": 20,
 	"MAX_NOUN_LEN": 50,
 	"NOUN_ST": 100,
+	"ST_EN_PREFIX": ["<S>", "<E>", "<IS>", "<IE>"]
 }
