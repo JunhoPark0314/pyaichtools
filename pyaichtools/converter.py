@@ -4,6 +4,7 @@ import inspect
 import json
 from treelib import Tree, plugins
 from pyaichtools.utils import *
+import re
 
 
 class Converter:
@@ -26,7 +27,7 @@ class Converter:
 
 		self.interest_attr_list = LIBCST_INTERST_ATTR
 		self.var_list = [LABEL_PREFIX_INFO["VAR_PREFIX"].format(i) for i in range(cfg.var_range)] + ["result"]
-		self.const_list = [LABEL_PREFIX_INFO["CONST_PREFIX"].format(i) for i in range(cfg.const_range)]
+		self.const_list = [LABEL_PREFIX_INFO["CONST_PREFIX"].format(i) for i in list(range(cfg.const_range)) + [100, 1000]]
 		#self.tree_spt_list = ['nodest', 'nodeen', 'argst', 'argen']
 
 		self.label_dict, self.reverse_label_dict, self.LABEL_LIMIT = \
@@ -42,6 +43,7 @@ class Converter:
 		self.SPT = cfg.SPT
 		self.attach_code = lambda x: self.header.body + self.quality_list.body + x + self.footer.body
 		self.debug = debug
+		self.hard_code_label = ["Attribute", "Subscript", "Name"]
 	
 	def attach_gen_file(self, generated):
 		self.gen_head.body[0].body.body.extend(generated.body)
@@ -57,26 +59,24 @@ class Converter:
 		libcst_class_list.sort()
 
 		math_func_list = [
-			'{}'.format(name)
+			'math.{}'.format(name)
 			for name, obj in inspect.getmembers(sys.modules['math'])
 			if inspect.isbuiltin(obj)
 		]
 		math_func_list.sort()
 
 		itertools_class_list = [
-			'{}'.format(name)
+			'itertools.{}'.format(name)
 			for name, obj in inspect.getmembers(sys.modules['itertools'])
 			if inspect.isclass(obj)
 		]
 		itertools_class_list.sort()
 
 		whole_label_list = libcst_class_list + math_func_list + itertools_class_list + var_list + const_list
-		whole_label_list.extend(LABEL_PREFIX_INFO["PROBLEM_INFO_PREFIX"])
-		whole_label_list.extend(["math","itertools"])
 		whole_label_list.extend(LABEL_PREFIX_INFO["ST_EN_PREFIX"])
 		LABEL_LIMIT = len(whole_label_list)
-		whole_label_list.extend(list(range(LABEL_PREFIX_INFO["MAX_QUANTITY_LEN"])))
-		whole_label_list.extend(list(range(LABEL_PREFIX_INFO["NOUN_ST"], LABEL_PREFIX_INFO["NOUN_ST"] + LABEL_PREFIX_INFO["MAX_NOUN_LEN"])))
+		whole_label_list.extend([LABEL_PREFIX_INFO["QL_PREFIX"].format(i) for i in range(LABEL_PREFIX_INFO["MAX_QUANTITY_LEN"])])
+		whole_label_list.extend([LABEL_PREFIX_INFO["NL_PREFIX"].format(i) for i in range(LABEL_PREFIX_INFO["MAX_NOUN_LEN"])])
 
 		label_dict = {k: v for k, v in zip(range(len(whole_label_list)), whole_label_list)}
 		reverse_label_dict = {k: v for k, v in zip(whole_label_list, range(len(whole_label_list)))}
@@ -94,7 +94,6 @@ class Converter:
 			curr_node = cst_tree.create_node(str.join(self.SPT, [attr, type(parsed_cst).__name__]), parent=parent_id)
 
 		curr_attr_list = dir(parsed_cst)
-		curr_attr_list.reverse()
 		for interest_attr in curr_attr_list:
 			if interest_attr in self.interest_attr_list:
 				if type(getattr(parsed_cst, interest_attr)) in [list ,tuple]:
@@ -127,8 +126,8 @@ class Converter:
 	def tree_to_list(self,ann_tree, seq=[],label_to_id=False):
 		curr_child = ann_tree.children(ann_tree.root)
 		curr_tag = ann_tree.get_node(ann_tree.root).tag.split(self.SPT)
-		curr_seq = [self.label_ele(curr_tag[1])] if label_to_id else [curr_tag[1]]
-		if len(curr_child) != 0:
+		curr_seq = [self.label_ele(curr_tag[1], ann_tree)] if label_to_id else [curr_tag[1]]
+		if len(curr_child) != 0 and curr_tag[1] not in self.hard_code_label:
 			prev_attr = curr_child[0].tag.split(self.SPT)[0]
 			per_attr_seq = []
 			for child_node in curr_child:
@@ -150,7 +149,6 @@ class Converter:
 				curr_node = root_tree.create_node(str.join(self.SPT, [attr,curr_tag]), parent=parent_id)
 				if hasattr(cst, curr_tag):
 					curr_node_attr_list = dir(getattr(cst, curr_tag))
-					curr_node_attr_list.reverse()
 					attr_list = [attr for attr in curr_node_attr_list if attr in self.interest_attr_list]
 					assert(len(attr_list) == len(node_seq[1:]))
 					for attr_ele, attr_seq in zip(attr_list, node_seq[1:]):
@@ -216,7 +214,7 @@ class Converter:
 		arg_name, class_name = curr_node.tag.split(self.SPT)
 
 		if not hasattr(cst, class_name):
-			return class_name
+			return cst.parse_expression(class_name)
 
 		curr_class = getattr(cst, class_name)
 
@@ -236,17 +234,21 @@ class Converter:
 				arg_dict[child_arg_name] = self.tree_to_cst(ann_tree.subtree(child_node.identifier))
 		return curr_class(**arg_dict)
 
-	def label_ele(self, ann_ele, problem_info=None):
-		if str.isdigit(ann_ele):
-			return int(ann_ele) + self.LABEL_LIMIT
-		else:
+	def label_ele(self, ann_ele, ann_tree=None):
+		if ann_ele in self.hard_code_label:
+			if ann_ele == "Attribute":
+				ann_ele = str.join('.',[n.tag.split(self.SPT)[-1] for n in ann_tree.leaves()[::-1]])
+			elif ann_ele == "Subscript":
+				ann_ele = "{}[{}]".format(*[n.tag.split(self.SPT)[-1] for n in ann_tree.leaves()[::-1]])
+			elif ann_ele == "Name":
+				ann_ele = "{}".format(*[n.tag.split(self.SPT)[-1] for n in ann_tree.leaves()])
+		try:
 			return self.reverse_label_dict[ann_ele]
+		except Exception:
+			raise Exception("Unknow type labeling. Call Junho park")
 
 	def unlabel_ele(self, label_ele, problem_info=None):
-		if label_ele >= self.LABEL_LIMIT:
-			return str(label_ele - self.LABEL_LIMIT)
-		else:
-			return self.label_dict[label_ele]
+		return self.label_dict[label_ele]
 
 	def label_seq(self, encoded_seq, problem_info=None):
 		return [self.label_ele(ann_ele, problem_info) for id, ann_ele in enumerate(encoded_seq)]

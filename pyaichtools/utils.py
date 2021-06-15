@@ -25,7 +25,8 @@ LIBCST_INTERST_ATTR = [
 LABEL_PREFIX_INFO = {
 	"VAR_PREFIX" : "var{}",
 	"CONST_PREFIX": "const{}",
-	"PROBLEM_INFO_PREFIX": ["QL", "NL"],
+	"QL_PREFIX": "QL[{}]",
+	"NL_PREFIX": "NL[{}]",
 	"MAX_QUANTITY_LEN": 20,
 	"MAX_NOUN_LEN": 50,
 	"NOUN_ST": 100,

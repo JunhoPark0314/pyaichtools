@@ -18,28 +18,35 @@ class Reducer():
 		with open(os.path.join(label_root_path, "reverse_label_dict.json")) as rld_file:
 			self.reverse_label_dict = json.load(rld_file)
 		
+		self.label_dict["None"] = "None"
+		self.reverse_label_dict["None"] = "None"
+
 		self.range_per_pi = {
-			"math": list(range(self.reverse_label_dict["acos"], self.reverse_label_dict["trunc"]+1)),
-			"itertools": list(range(self.reverse_label_dict["__loader__"], self.reverse_label_dict["zip_longest"]+1)),
-			"QL": list(range(self.reverse_label_dict["0"], self.reverse_label_dict["19"]+1)),
-			"NL": list(range(self.reverse_label_dict["100"], self.reverse_label_dict["149"]+1)),
-			"var": list(range(self.reverse_label_dict["var0"], self.reverse_label_dict["itertools"]+1))
+			"math": list(range(self.reverse_label_dict["math.acos"], self.reverse_label_dict["math.trunc"]+1)),
+			"itertools": list(range(self.reverse_label_dict["itertools.__loader__"], self.reverse_label_dict["itertools.zip_longest"]+1)),
+			"QL": list(range(self.reverse_label_dict["QL[0]"], self.reverse_label_dict["QL[19]"]+1)),
+			"NL": list(range(self.reverse_label_dict["NL[0]"], self.reverse_label_dict["NL[49]"]+1)),
+			"var": list(range(self.reverse_label_dict["var0"], self.reverse_label_dict["const1000"]+1)),
+			"signal": list(range(self.reverse_label_dict["<S>"], self.reverse_label_dict["<IE>"]+1))
 		}
 		self.reverse_range_per_pi = defaultdict(lambda:"None")
 		for k, v in self.range_per_pi.items():
 			for v_ele in v:
 				self.reverse_range_per_pi[v_ele] = k
 
-		self.get_child_node = lambda x: getattr(cst, x).__dict__['__annotations__']
+		self.get_child_node = lambda x: [attr for attr in getattr(cst, x).__dict__['__annotations__'].items() if attr[0] in LIBCST_INTERST_ATTR]
 		self.cst_need_child = lambda x: '__annotations__' in getattr(cst, x).__dict__
-		self.hard_mask_node = [self.reverse_label_dict["Integer"], self.reverse_label_dict["Float"], self.reverse_label_dict["Imaginary"]]
 
 		if debug:
-			self.label = lambda x: x
-			self.reverse_label = lambda x: self.label_dict[str(x)]
+			self.id_to_block_label = lambda x: self.label_dict[str(x)]
 		else:
-			self.label = lambda x: self.reverse_label_dict[x]
-			self.reverse_label = lambda x: x
+			self.id_to_block_label = lambda x: x
+
+		self.name_to_pi = {
+			self.reverse_label_dict["Name"]: ["var"],
+			self.reverse_label_dict["Subscript"]: ["QL", "NL"],
+			self.reverse_label_dict["Attribute"]: ["math", "itertools"]
+		}
 
 		if cst_class_tree_path is None:
 			self.cst_class_tree = self.build_cst_class_tree()
@@ -67,6 +74,8 @@ class Reducer():
 				cst_count+=1
 				if hasattr(cst_classes[curr_tree], '__base__'):
 					curr_base = cst_classes[curr_tree].__base__.__name__ 
+					if curr_base[0] == '_' and len(cst_classes[curr_tree].__bases__) > 1 and "libcst" in cst_classes[curr_tree].__bases__[1].__module__:
+						curr_base = cst_classes[curr_tree].__bases__[1].__name__
 					parent_tree_key = [_tree for _tree in list(cst_tree_dict.keys()) if curr_base in list(cst_tree_dict[_tree].expand_tree())]
 
 					if len(parent_tree_key) != 0:
@@ -89,70 +98,140 @@ class Reducer():
 		
 		return cst_tree_dict["CSTNode"]
 	
-	def get_candidate(self, parent_label, curr_attr, pi_label, curr_label):
-		seq_label = []
-
-		if parent_label == 'Integer':
-			assert pi_label in ["QL", "NL"]
-			seq_label = [self.reverse_label(idx_label) for idx_label in self.range_per_pi[pi_label]]
-		elif curr_attr is str:
-			# curr node need string node as child. This is only the case when it is variable name or package name.
-			assert pi_label in ["math", "itertools", "var"]
-			seq_label = [self.reverse_label(idx_label) for idx_label in self.range_per_pi[pi_label]]
-		elif type(curr_attr) == typing._GenericAlias:
-			if curr_attr._name == "Sequence":
-				key_type_info = "Sequence"
-			for attr_ele in curr_attr.__args__:
+	def flatten_cst_type(self, direct_attr):
+		direct_label = []
+		if type(direct_attr) == typing._GenericAlias:
+			for attr_ele in direct_attr.__args__:
 				if 'libcst' in attr_ele.__module__:
-					seq_label.extend([self.label(node.tag) for node in self.cst_class_tree.leaves(attr_ele.__name__)])
+					direct_label.extend([self.reverse_label_dict[node.tag] for node in self.cst_class_tree.leaves(attr_ele.__name__)])
+				if type(attr_ele) == typing._GenericAlias:
+					direct_label.extend(self.flatten_cst_type(attr_ele))
 		else:
-			seq_label = [self.label(node.tag) for node in self.cst_class_tree.leaves(curr_attr.__name__)]
+			direct_label.extend([self.reverse_label_dict[node.tag] for node in self.cst_class_tree.leaves(direct_attr.__name__)])
 
-		if curr_label is not "Index":
-			seq_label = self.remove_hmn(seq_label)
+		return list(set(direct_label))
+
+	def get_candidate(self, parent_label, direct_attr, prev_pred_label):
+		seq_label = []
+		direct_label = []
+		curr_latest_label = prev_pred_label[-1]
+		curr_latest_label_child_num = 0
+		for prl in prev_pred_label[::-1]:
+			if hasattr(cst, prl):
+				curr_latest_label = prl
+				break
+			elif self.reverse_range_per_pi[prl] not in ["signal", "None"]:
+				curr_latest_label = prl
+				break
+			curr_latest_label_child_num += 1
+
+		#6. Curren label is leaf node label predict End token only
+		seq_label = [self.reverse_label_dict["<E>"]]
+
+		direct_label = self.flatten_cst_type(direct_attr)
+
+		if hasattr(cst, curr_latest_label):
+			# 2. If curr_latest_label is CST Node, check if it has sufficient child
+			if len(self.get_child_node(curr_latest_label)) > curr_latest_label_child_num:
+				#3. has insufficient child
+				seq_label = [self.reverse_label_dict["<IS>"]]
+			elif type(direct_attr) == typing._GenericAlias and direct_attr._name == 'Sequence':
+				#4. has sufficient child and parent label require list of child
+				seq_label += direct_label
+		elif curr_latest_label == "<S>":
+			#5. Current layer has just begin, need to predict label by direct attr
+			seq_label = direct_label
+		
+		seq_label = self.remove_hmn(seq_label)
 
 		return seq_label
 	
 	def remove_hmn(self, candidate_list):
-		for hmn in self.hard_mask_node:
+		temp_candidate_list =  []
+		for hmn in list(self.name_to_pi.keys()):
 			if hmn in candidate_list:
-				candidate_list.remove(self.reverse_label(hmn))
-		return candidate_list
+				candidate_list.remove(hmn)
+				for pi in self.name_to_pi[hmn]:
+					curr_pi_label = self.range_per_pi[pi]
+					temp_candidate_list.extend(curr_pi_label)
+		return candidate_list + temp_candidate_list 
 		
-	def reduce_out(self, parent_id_list, parent_child_idx, curr_id_list):
-		parent_label = list(itemgetter(*[str(v) for v in parent_id_list])(self.label_dict))
-		curr_label = list(itemgetter(*[str(v) for v in curr_id_list])(self.label_dict))
-		pi_label = list(itemgetter(*curr_id_list)(self.reverse_range_per_pi))
+	def reduce_out(self, parent_id_list, parent_child_idx, prev_pred_list):
+		str_lister = lambda x: [x] if type(x) == str else list(x)
+		parent_label = str_lister(itemgetter(*[str(v) for v in parent_id_list])(self.label_dict))
+		tuple_lister =  lambda x: [x] if type(x) != tuple else list(x)
+		prev_pred_label = [tuple_lister(itemgetter(*[str(v) for v in inner_v])(self.label_dict)) for inner_v in prev_pred_list]
+		#pi_label = list(itemgetter(*curr_id_list)(self.reverse_range_per_pi))
 
 		# predicted cst node which need child node, return possible prediction as dictionary
 
-		attr_list = []
+		direct_attr_list = []
 		for pci, p_label in zip(parent_child_idx, parent_label):
 			cnt = 0
 			curr_attr = None
-			curr_child_node = list(self.get_child_node(p_label).items())
-			curr_child_node.reverse()
-			for k, v in curr_child_node:
-				if k in LIBCST_INTERST_ATTR:
-					cnt += 1
-					if cnt == pci:
-						curr_attr = v
-						break
-			attr_list.append(curr_attr)
+			if p_label is "None":
+				direct_attr_list.append(cst.Module)
+				continue
+			curr_child_node = self.get_child_node(p_label)
+			for v in sorted(curr_child_node, key=lambda x:x[0]):
+				cnt += 1
+				if cnt == pci:
+					curr_attr = v[1]
+					break
+			direct_attr_list.append(curr_attr)
 
 		return [
-		    self.get_candidate(pl, al, pi, cl)
-		    for pl, al, pi, cl in zip(parent_label, attr_list, pi_label, curr_label)
+		    self.get_candidate(pl, al, ppl)
+		    for pl, al, ppl in zip(parent_label, direct_attr_list, prev_pred_label)
 		]
 
+	def test_label_mask(self, label_seq, parent_label=None, child_idx=0):
+		label_seq.insert(0, self.reverse_label_dict["<S>"])
+		label_seq.append(self.reverse_label_dict["<E>"])
+		parent_label_list = []
+		prev_pred_list = []
+		child_idx_list = []
+
+		for id, node in enumerate(label_seq):
+			if id == 0:
+				continue
+			parent_label_list.append(parent_label if parent_label is not None else "None")
+			child_idx_list.append(child_idx)
+			prev_pred_list.append([x if type(x) is not list else self.reverse_label_dict["<IS>"] for x in label_seq[:id]])
+		
+		
+		mask = self.reduce_out(parent_label_list, child_idx_list, prev_pred_list)
+		
+		for id, node in enumerate(label_seq):
+			if id == 0:
+				continue
+			node_label = node if type(node) is not list else self.reverse_label_dict["<IS>"]
+			temp_mask = [self.id_to_block_label(x) for x in mask[id-1]]
+			print(self.id_to_block_label(node_label), temp_mask)
+			if node_label not in mask[id-1]:
+				raise Exception("Non predictable node from mask")
+
+		latest_label_diff = 0
+		latest_label = None
+		for id, node in enumerate(label_seq):
+			latest_label_diff += 1
+			if type(node) == list:
+				self.test_label_mask(node, latest_label, latest_label_diff)
+			elif hasattr(cst, self.label_dict[str(node)]):
+				latest_label_diff = 0
+				latest_label = node
 
 if __name__ == '__main__':
-	#test_reducer = Reducer("label", "label/cst_tree_dict.json")
 	test_reducer = Reducer("label", debug=False)
-	#child_dict = test_reducer.reduce_out(test_reducer.reverse_label_dict["If"], 1, test_reducer.reverse_label_dict["Comparison"])
-	parent_label = [test_reducer.reverse_label_dict[v] for v in ["Name", "Integer", "For"]]
-	curr_label = [test_reducer.reverse_label_dict[v] for v in ["var0", "5", "Tuple"]]
-	child_idx = [1, 1, 3]
-	child_dict = test_reducer.reduce_out(parent_label, child_idx, curr_label)
-	print(child_dict)
-	#print(child_dict)
+	from pyaichtools import DefaultCfg, Converter
+	temp_converter = Converter(DefaultCfg, debug=False)
+	body_path = 'test/src/body.py'
+	label_seq = temp_converter.encode(body_path)
+
+	"""
+	parent_label = [test_reducer.reverse_label_dict[v] for v in ["AugAssign","If"]]
+	prev_label = [[test_reducer.reverse_label_dict[v] for v in inner_v] for inner_v in [["<IE>","BinaryOperation","<IE>","<IE>","<IE>"], ["<IE>"]] ]
+	child_idx = [1, 2]
+	"""
+
+	test_reducer.test_label_mask(label_seq)
