@@ -9,6 +9,7 @@ from pyaichtools.utils import *
 from treelib import Tree, Node				
 import copy
 from operator import itemgetter
+import time
 
 class Reducer():
 	def __init__(self, label_root_path, cst_class_tree_path=None, debug=False):
@@ -58,6 +59,9 @@ class Reducer():
 				self.cst_class_tree = json.load(tree_file)
 			#for k, v in self.cst_class_tree.items():
 			#	self.cst_class_tree[k] = 
+		
+		self.sequence_test = lambda x : (type(x) == typing.Sequence) or ( 'Sequence' == x.__name__ if hasattr(x, '__name__') else False)
+		self.union_test = lambda x: (type(x) == typing.Union) or ('_Union' == type(x).__name__ if hasattr(type(x), '__name__') else False)
 	
 	def build_cst_class_tree(self):
 		cst_classes = {cst_class: getattr(cst, cst_class) for cst_class in dir(sys.modules["libcst"]) if inspect.isclass(getattr(cst, cst_class))}
@@ -100,11 +104,11 @@ class Reducer():
 	
 	def flatten_cst_type(self, direct_attr):
 		direct_label = []
-		if type(direct_attr) == typing._GenericAlias:
+		if self.sequence_test(direct_attr) or self.union_test(direct_attr):
 			for attr_ele in direct_attr.__args__:
 				if 'libcst' in attr_ele.__module__:
 					direct_label.extend([self.reverse_label_dict[node.tag] for node in self.cst_class_tree.leaves(attr_ele.__name__)])
-				if type(attr_ele) == typing._GenericAlias:
+				if self.sequence_test(direct_attr) or self.union_test(direct_attr):
 					direct_label.extend(self.flatten_cst_type(attr_ele))
 		else:
 			direct_label.extend([self.reverse_label_dict[node.tag] for node in self.cst_class_tree.leaves(direct_attr.__name__)])
@@ -116,6 +120,7 @@ class Reducer():
 		direct_label = []
 		curr_latest_label = prev_pred_label[-1]
 		curr_latest_label_child_num = 0
+
 		for prl in prev_pred_label[::-1]:
 			if hasattr(cst, prl):
 				curr_latest_label = prl
@@ -134,11 +139,11 @@ class Reducer():
 			# 2. If curr_latest_label is CST Node, check if it has sufficient child
 			if len(self.get_child_node(curr_latest_label)) > curr_latest_label_child_num:
 				#3. has insufficient child
-				seq_label = [self.reverse_label_dict["<IS>"]]
-			elif type(direct_attr) == typing._GenericAlias and direct_attr._name == 'Sequence':
+				seq_label = [self.reverse_label_dict["<IE>"]]
+			elif self.sequence_test(direct_attr):
 				#4. has sufficient child and parent label require list of child
 				seq_label += direct_label
-		elif curr_latest_label == "<S>":
+		elif curr_latest_label == "<S>" or curr_latest_label == "<IS>":
 			#5. Current layer has just begin, need to predict label by direct attr
 			seq_label = direct_label
 		
@@ -157,6 +162,7 @@ class Reducer():
 		return candidate_list + temp_candidate_list 
 		
 	def reduce_out(self, parent_id_list, parent_child_idx, prev_pred_list):
+
 		str_lister = lambda x: [x] if type(x) == str else list(x)
 		parent_label = str_lister(itemgetter(*[str(v) for v in parent_id_list])(self.label_dict))
 		tuple_lister =  lambda x: [x] if type(x) != tuple else list(x)
@@ -172,21 +178,26 @@ class Reducer():
 			if p_label is "None":
 				direct_attr_list.append(cst.Module)
 				continue
+			assert pci is not None
 			curr_child_node = self.get_child_node(p_label)
 			for v in sorted(curr_child_node, key=lambda x:x[0]):
-				cnt += 1
 				if cnt == pci:
 					curr_attr = v[1]
 					break
+				cnt += 1
 			direct_attr_list.append(curr_attr)
 
-		return [
+		start = time.perf_counter()
+
+		candidate = [
 		    self.get_candidate(pl, al, ppl)
 		    for pl, al, ppl in zip(parent_label, direct_attr_list, prev_pred_label)
 		]
 
-	def test_label_mask(self, label_seq, parent_label=None, child_idx=0):
-		label_seq.insert(0, self.reverse_label_dict["<S>"])
+		return candidate
+
+	def test_label_mask(self, label_seq, parent_label=None, child_idx=None, queue_id=0):
+		label_seq.insert(0, self.reverse_label_dict["<S>" if queue_id == 0 else "<IS>"])
 		label_seq.append(self.reverse_label_dict["<E>"])
 		parent_label_list = []
 		prev_pred_list = []
@@ -197,7 +208,7 @@ class Reducer():
 				continue
 			parent_label_list.append(parent_label if parent_label is not None else "None")
 			child_idx_list.append(child_idx)
-			prev_pred_list.append([x if type(x) is not list else self.reverse_label_dict["<IS>"] for x in label_seq[:id]])
+			prev_pred_list.append([x if type(x) is not list else self.reverse_label_dict["<IE>"] for x in label_seq[:id]])
 		
 		
 		mask = self.reduce_out(parent_label_list, child_idx_list, prev_pred_list)
@@ -205,21 +216,26 @@ class Reducer():
 		for id, node in enumerate(label_seq):
 			if id == 0:
 				continue
-			node_label = node if type(node) is not list else self.reverse_label_dict["<IS>"]
+			node_label = node if type(node) is not list else self.reverse_label_dict["<IE>"]
 			temp_mask = [self.id_to_block_label(x) for x in mask[id-1]]
 			print(self.id_to_block_label(node_label), temp_mask)
 			if node_label not in mask[id-1]:
 				raise Exception("Non predictable node from mask")
+		
+		next_list = []
 
 		latest_label_diff = 0
 		latest_label = None
 		for id, node in enumerate(label_seq):
-			latest_label_diff += 1
 			if type(node) == list:
-				self.test_label_mask(node, latest_label, latest_label_diff)
+				next_list.append([node, latest_label, latest_label_diff-1])
 			elif hasattr(cst, self.label_dict[str(node)]):
 				latest_label_diff = 0
 				latest_label = node
+			latest_label_diff += 1
+
+		return mask, next_list
+
 
 if __name__ == '__main__':
 	test_reducer = Reducer("label", debug=False)
@@ -234,4 +250,16 @@ if __name__ == '__main__':
 	child_idx = [1, 2]
 	"""
 
-	test_reducer.test_label_mask(label_seq)
+	queue = [[label_seq, None, None]]
+	curr_id = 0
+	mask_per_level = {}
+	while len(queue) != curr_id:
+		curr_node = queue[curr_id]
+		curr_node.extend([curr_id])
+		mask, new_nodes = test_reducer.test_label_mask(*curr_node)
+		queue.extend(new_nodes)
+		mask_per_level[curr_id] = mask
+		curr_id += 1
+
+	with open("dummy.json", "w") as dummy_file:
+		json.dump(mask_per_level, dummy_file)

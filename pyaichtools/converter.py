@@ -13,7 +13,7 @@ class Converter:
 			header_file = header_file.read()
 			self.header = cst.parse_module(header_file)
 
-		with open(cfg.ql_path) as ql_file:
+		with open(cfg.ql_path, encoding="utf-8") as ql_file:
 			ql_file = ql_file.read()
 			self.quality_list = cst.parse_module(ql_file)
 
@@ -126,7 +126,7 @@ class Converter:
 	def tree_to_list(self,ann_tree, seq=[],label_to_id=False):
 		curr_child = ann_tree.children(ann_tree.root)
 		curr_tag = ann_tree.get_node(ann_tree.root).tag.split(self.SPT)
-		curr_seq = [self.label_ele(curr_tag[1], ann_tree)] if label_to_id else [curr_tag[1]]
+		curr_seq = [self.label_ele(curr_tag[1], ann_tree, label_to_id)]
 		if len(curr_child) != 0 and curr_tag[1] not in self.hard_code_label:
 			prev_attr = curr_child[0].tag.split(self.SPT)[0]
 			per_attr_seq = []
@@ -234,7 +234,7 @@ class Converter:
 				arg_dict[child_arg_name] = self.tree_to_cst(ann_tree.subtree(child_node.identifier))
 		return curr_class(**arg_dict)
 
-	def label_ele(self, ann_ele, ann_tree=None):
+	def label_ele(self, ann_ele, ann_tree=None, debug=False):
 		if ann_ele in self.hard_code_label:
 			if ann_ele == "Attribute":
 				ann_ele = str.join('.',[n.tag.split(self.SPT)[-1] for n in ann_tree.leaves()[::-1]])
@@ -243,7 +243,7 @@ class Converter:
 			elif ann_ele == "Name":
 				ann_ele = "{}".format(*[n.tag.split(self.SPT)[-1] for n in ann_tree.leaves()])
 		try:
-			return self.reverse_label_dict[ann_ele]
+			return self.reverse_label_dict[ann_ele] if debug else ann_ele
 		except Exception:
 			raise Exception("Unknow type labeling. Call Junho park")
 
