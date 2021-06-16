@@ -52,17 +52,30 @@ class Reducer():
 		if cst_class_tree_path is None:
 			self.cst_class_tree = self.build_cst_class_tree()
 
-			with open('label/cst_tree_dict.json', "w") as tree_file:
+			with open(os.path.join(label_root_path, 'cst_tree_dict.json'), "w") as tree_file:
 				json.dump(self.cst_class_tree.to_dict(), tree_file)
 		else:
 			with open(cst_class_tree_path) as tree_file:
 				self.cst_class_tree = json.load(tree_file)
 			#for k, v in self.cst_class_tree.items():
 			#	self.cst_class_tree[k] = 
-		
-		self.sequence_test = lambda x : (type(x) == typing.Sequence) or ( 'Sequence' == x.__name__ if hasattr(x, '__name__') else False)
-		self.union_test = lambda x: (type(x) == typing.Union) or ('_Union' == type(x).__name__ if hasattr(type(x), '__name__') else False)
+
+		self.hard_except_label = ["BaseString", "BaseNumber", "BaseDict", "BaseSet"]
+		self.hard_except_label = [self.cst_class_tree.subtree(x).leaves() for x in self.hard_except_label]
+		temp_label = []
+		for x in self.hard_except_label:
+			for node in x:
+				temp_label.append(self.reverse_label_dict[node.tag])
 	
+		self.hard_except_label = temp_label
+		if hasattr(typing, '_GenericAlias'):
+			self.sequence_test = lambda x: type(x).__name__ == '_GenericAlias' and x._name == 'Sequence'
+			self.union_test = lambda x :type(x).__name__ == '_GenericAlias' and x._name == None and len(x.__args__) > 1
+		else:
+			self.sequence_test = lambda x : (type(x) == typing.Sequence) or ( 'Sequence' == x.__name__ if hasattr(x, '__name__') else False)
+			self.union_test = lambda x: (type(x) == typing.Union) or ('_Union' == type(x).__name__ if hasattr(type(x), '__name__') else False)
+
+
 	def build_cst_class_tree(self):
 		cst_classes = {cst_class: getattr(cst, cst_class) for cst_class in dir(sys.modules["libcst"]) if inspect.isclass(getattr(cst, cst_class))}
 		cst_tree_dict = {}
@@ -104,6 +117,7 @@ class Reducer():
 	
 	def flatten_cst_type(self, direct_attr):
 		direct_label = []
+		assert type(direct_attr) is not str
 		if self.sequence_test(direct_attr) or self.union_test(direct_attr):
 			for attr_ele in direct_attr.__args__:
 				if 'libcst' in attr_ele.__module__:
@@ -112,7 +126,7 @@ class Reducer():
 					direct_label.extend(self.flatten_cst_type(attr_ele))
 		else:
 			direct_label.extend([self.reverse_label_dict[node.tag] for node in self.cst_class_tree.leaves(direct_attr.__name__)])
-
+				
 		return list(set(direct_label))
 
 	def get_candidate(self, parent_label, direct_attr, prev_pred_label):
@@ -159,6 +173,11 @@ class Reducer():
 				for pi in self.name_to_pi[hmn]:
 					curr_pi_label = self.range_per_pi[pi]
 					temp_candidate_list.extend(curr_pi_label)
+
+		for hard_except_label in self.hard_except_label:
+			if hard_except_label in candidate_list:
+				candidate_list.remove(hard_except_label)
+
 		return candidate_list + temp_candidate_list 
 		
 	def reduce_out(self, parent_id_list, parent_child_idx, prev_pred_list):
